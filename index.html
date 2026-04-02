@@ -522,7 +522,24 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
 .cap-copy-toggle input{accent-color:var(--acc);cursor:pointer;width:13px;height:13px}
 .cap-copy-toggle:hover{color:var(--txt2)}
 
-/* ── VIDEO SUPPORT ── */
+/* ── VIDEO SHIMMER — same shimmer animation, dark variant for video black backgrounds ── */
+.vid-wrap{position:relative;width:100%;height:100%}
+.vid-wrap::before{
+  content:'';position:absolute;inset:0;z-index:1;
+  background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.1) 50%,rgba(255,255,255,.04) 75%);
+  background-size:800px 100%;
+  animation:shimmer 1.4s ease-in-out infinite;
+  border-radius:inherit;
+  pointer-events:none;
+  transition:opacity .3s;
+}
+.vid-wrap.loaded::before{opacity:0}
+.vid-wrap video{position:relative;z-index:2;opacity:0;transition:opacity .35s ease}
+.vid-wrap.loaded video{opacity:1}
+/* Reel wrap shimmer */
+.igm-reel-wrap .vid-wrap{aspect-ratio:9/16;height:100%}
+/* FB video wrap shimmer */
+.fbm-1 .vid-wrap{width:100%}
 .pthmb-vid{position:relative;aspect-ratio:4/3;border-radius:var(--rs);overflow:hidden;border:1px solid var(--bdr2);cursor:grab;user-select:none;background:#111;transition:opacity .15s,box-shadow .15s}
 .pthmb-vid:active{cursor:grabbing}
 .pthmb-vid.drag-src{opacity:.35}
@@ -1364,19 +1381,22 @@ function renderLbox(){
   var vidControls = document.getElementById('lbox-vid-controls');
 
   if(isVid){
-    /* Swap out img for video inside the wrap, preserving nav buttons */
     var existingVid = document.getElementById('lbox-vid');
     if(!existingVid){
       var vid = document.createElement('video');
       vid.id = 'lbox-vid';
-      vid.style.cssText = 'max-width:100%;max-height:75vh;border-radius:6px;display:block;background:#000;outline:none';
+      vid.style.cssText = 'max-width:100%;max-height:75vh;border-radius:6px;display:block;background:#000;outline:none;opacity:0;transition:opacity .35s ease';
       vid.controls = false;
       vid.loop = true;
-      vid.muted = true; /* start muted for autoplay */
+      vid.muted = true;
       vid.setAttribute('playsinline','');
+      vid.onloadeddata = function(){ this.style.opacity='1'; };
       mediaWrap.insertBefore(vid, mediaWrap.querySelector('.lbox-nav.lbox-next'));
     }
     var v = document.getElementById('lbox-vid');
+    /* Reset opacity for new src */
+    v.style.opacity = '0';
+    v.onloadeddata = function(){ this.style.opacity='1'; };
     v.src = src;
     v.style.display = 'block';
     imgEl.style.display = 'none';
@@ -1603,8 +1623,10 @@ function buildFbMedia(photos){
     var fvId='fbprev_vid';
     setTimeout(function(){ var v=document.getElementById(fvId); if(v) v.play().catch(function(){}); },100);
     return '<div class="fbm-1" style="background:#000;position:relative">'+
-      '<video id="'+fvId+'" src="'+firstSrc+'" muted loop playsinline style="width:100%;max-height:476px;display:block;object-fit:contain;background:#000"></video>'+
-      '<button style="position:absolute;bottom:10px;right:10px;background:rgba(0,0,0,.5);border:none;color:#fff;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center" '+
+      '<div class="vid-wrap" style="width:100%">'+
+        '<video id="'+fvId+'" src="'+firstSrc+'" muted loop playsinline style="width:100%;max-height:476px;display:block;object-fit:contain;background:#000" onloadeddata="vidLoad(this)"></video>'+
+      '</div>'+
+      '<button style="position:absolute;bottom:10px;right:10px;background:rgba(0,0,0,.5);border:none;color:#fff;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;z-index:3" '+
         'onclick="(function(v){v.muted=!v.muted;this.textContent=v.muted?\'🔇\':\'🔊\'}).call(this,document.getElementById(\''+fvId+'\'))">🔇</button>'+
     '</div>';
   }
@@ -1669,7 +1691,9 @@ function buildIgCarousel(idx, photos){
       v.play().catch(function(){});
     },100);
     return '<div class="igm-reel-wrap">'+
-      '<video id="'+vidId+'" src="'+firstSrc+'" muted loop playsinline style="width:100%;height:100%;object-fit:cover;display:block"></video>'+
+      '<div class="vid-wrap" style="width:100%;height:100%;position:absolute;inset:0">'+
+        '<video id="'+vidId+'" src="'+firstSrc+'" muted loop playsinline style="width:100%;height:100%;object-fit:cover;display:block" onloadeddata="vidLoad(this)"></video>'+
+      '</div>'+
       '<div class="igm-reel-overlay"></div>'+
       '<div class="igm-reel-badge">REEL</div>'+
       '<button class="igm-reel-mute" id="igprev_mute_'+idx+'" onclick="igReelMute(\''+vidId+'\',\'igprev_mute_'+idx+'\')">🔇</button>'+
@@ -1808,8 +1832,10 @@ function renderDetail(idx){
       var isVid=src&&/\.(mp4|mov|webm)$/i.test(src);
       var pCmtCount = (data.photoComments&&data.photoComments[String(pi)])?data.photoComments[String(pi)].length:0;
       var mediaEl=isVid
-        ? '<video src="'+src+'" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;display:block;pointer-events:none"></video>'+
-          '<div class="vid-play-icon"><svg viewBox="0 0 24 24" fill="#fff" stroke="none"><polygon points="5,3 19,12 5,21"/></svg></div>'
+        ? '<div class="vid-wrap" style="position:absolute;inset:0">'+
+            '<video src="'+src+'" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;display:block;pointer-events:none" onloadeddata="vidLoad(this)"></video>'+
+            '<div class="vid-play-icon" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.3);pointer-events:none;z-index:3"><svg viewBox="0 0 24 24" fill="#fff" stroke="none" width="32" height="32"><polygon points="5,3 19,12 5,21"/></svg></div>'+
+          '</div>'
         : '<div class="img-wrap" style="position:absolute;inset:0;border-radius:0"><img src="'+tSrc+'" alt="Photo '+(pi+1)+'" style="width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;image-rendering:auto;-ms-interpolation-mode:bicubic" onload="imgLoad(this)" loading="lazy" decoding="async"></div>';
       var tClass=isVid?'pthmb pthmb-vid':'pthmb';
       thumbsH+=
@@ -2295,6 +2321,11 @@ function ts(){ return new Date().toLocaleString('en-US',{month:'short',day:'nume
 /* Mark an img-wrap as loaded when its image fires onload */
 function imgLoad(el){
   var wrap = el.closest ? el.closest('.img-wrap') : el.parentNode;
+  if(wrap) wrap.classList.add('loaded');
+}
+/* Mark a vid-wrap as loaded when its video fires loadeddata */
+function vidLoad(el){
+  var wrap = el.closest ? el.closest('.vid-wrap') : el.parentNode;
   if(wrap) wrap.classList.add('loaded');
 }
 /* Build an img tag with shimmer wrapper — used in preview and grid */
