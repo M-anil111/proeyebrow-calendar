@@ -1172,43 +1172,71 @@ async function dbUpdateMediaOrder(idx){
 }
 
 /* ── CALENDAR STATUS ──
-   Linear progression, one direction only:
-   Collecting Ideas → Ideas in Review → Ideas Approved → Creatives in Progress
-
-   "Creatives in Progress" triggers once all ideas are approved AND
-   at least one post has a caption or uploaded media.
-   It never reverts to Ideas Approved once creatives start coming in.
+   Linear progression:
+   Collecting Ideas → Ideas in Review → Ideas Approved →
+   Creatives in Progress → Ready for Review → In Final Review → Posted
 */
-var STATUS_ORDER = ['Collecting Ideas','Ideas in Review','Ideas Approved','Creatives in Progress'];
+var STATUS_ORDER = [
+  'Collecting Ideas',
+  'Ideas in Review',
+  'Ideas Approved',
+  'Creatives in Progress',
+  'Ready for Review',
+  'In Final Review',
+  'Publishing in Progress',
+  'All Published'
+];
+var STATUS_COLORS = {
+  'Collecting Ideas':      'var(--txt3)',
+  'Ideas in Review':       'var(--amb)',
+  'Ideas Approved':        'var(--grn)',
+  'Creatives in Progress': 'var(--acc)',
+  'Ready for Review':      'var(--blu)',
+  'In Final Review':       'var(--blu)',
+  'Publishing in Progress':'var(--acc)',
+  'All Published':         'var(--grn)'
+};
 
 function deriveCalStatus(){
   var total = POSTS.length;
   var allIdeasApproved = true;
   var someIdeasApproved = false;
   var someCreatives = false;
-  var allCreatives = true; /* all idea-approved posts have caption+media */
+  var allCreatives = true;
+  var someFinalAction = false;
+  var somePosted = false;
+  var allPosted = true;
 
   for(var i = 0; i < total; i++){
     var d = gps(i);
     if(!d.ideaApproved){
       allIdeasApproved = false;
       allCreatives = false;
+      allPosted = false;
     } else {
       someIdeasApproved = true;
       var hasFbCap = !!(ST['fb_cv_'+i] && ST['fb_cv_'+i].trim());
       var hasIgCap = !!(ST['ig_cv_'+i] && ST['ig_cv_'+i].trim());
       var hasMedia = !!(DB.media[i] && DB.media[i].length > 0);
-      var hasCreative = hasFbCap || hasIgCap || hasMedia;
+      var hasCreative = (hasFbCap || hasIgCap) && hasMedia;
       if(hasCreative) someCreatives = true;
       else allCreatives = false;
+
+      if(d.status === 'approved' || d.status === 'declined' ||
+         d.status === 'revision' || d.status === 'posted') someFinalAction = true;
+      if(d.status === 'posted') somePosted = true;
+      else allPosted = false;
     }
   }
 
-  /* Progress: once a higher status is reached, never go below it */
-  if(allIdeasApproved && someCreatives) return {status:'Creatives in Progress', col:'var(--acc)'};
-  if(allIdeasApproved)                  return {status:'Ideas Approved',         col:'var(--grn)'};
-  if(someIdeasApproved)                 return {status:'Ideas in Review',         col:'var(--amb)'};
-  return                                       {status:'Collecting Ideas',         col:'var(--txt3)'};
+  if(allPosted && somePosted)               return {status:'All Published',          col:STATUS_COLORS['All Published']};
+  if(somePosted)                            return {status:'Publishing in Progress',  col:STATUS_COLORS['Publishing in Progress']};
+  if(someFinalAction)                       return {status:'In Final Review',         col:STATUS_COLORS['In Final Review']};
+  if(allIdeasApproved && allCreatives)      return {status:'Ready for Review',        col:STATUS_COLORS['Ready for Review']};
+  if(allIdeasApproved && someCreatives)     return {status:'Creatives in Progress',   col:STATUS_COLORS['Creatives in Progress']};
+  if(allIdeasApproved)                      return {status:'Ideas Approved',          col:STATUS_COLORS['Ideas Approved']};
+  if(someIdeasApproved)                     return {status:'Ideas in Review',         col:STATUS_COLORS['Ideas in Review']};
+  return                                           {status:'Collecting Ideas',        col:STATUS_COLORS['Collecting Ideas']};
 }
 
 /* ── CALENDAR STATUS LOG — only written after DB fully loaded ── */
@@ -1250,10 +1278,10 @@ function renderCalTimeline(){
   var list = document.getElementById('stlList');
   if(!wrap || !list) return;
 
-  var current = g.currentStatus || deriveCalStatus().status;
+  var derived = deriveCalStatus();
+  var current = derived.status;
   var currentIdx = STATUS_ORDER.indexOf(current);
 
-  /* Always show — it's a progress tracker not a log */
   wrap.style.display = '';
 
   var h = '';
@@ -1262,12 +1290,12 @@ function renderCalTimeline(){
     var reached = g.statusReached && g.statusReached[s];
     var isCurrent = (s === current);
     var isPast = (i < currentIdx);
-    var isFuture = (i > currentIdx);
+    var col = STATUS_COLORS[s] || 'var(--txt3)';
 
     var dotStyle = isPast
       ? 'background:var(--grn);border-color:var(--panel)'
       : isCurrent
-        ? 'background:'+deriveCalStatus().col+';border-color:var(--panel)'
+        ? 'background:'+col+';border-color:var(--panel)'
         : 'background:var(--bdr2);border-color:var(--panel)';
 
     var statusStyle = isPast
@@ -1276,7 +1304,7 @@ function renderCalTimeline(){
         ? 'color:var(--txt2);font-weight:700'
         : 'color:var(--txt3)';
 
-    var timeStr = isCurrent && reached ? reached : (isPast && reached ? reached : '');
+    var timeStr = (isCurrent || isPast) && reached ? reached : '';
 
     h += '<div class="stl-item">'+
       '<div class="stl-dot" style="'+dotStyle+'"></div>'+
