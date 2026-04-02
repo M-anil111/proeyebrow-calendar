@@ -828,6 +828,22 @@ function dbLoading(show, msg){
 function mediaUrl(path){
   return window.SB_URL+'/storage/v1/object/public/'+window.SB_BUCKET+'/'+path;
 }
+/* ── RESIZED URL via Supabase image transform — for thumbnails & previews ──
+   width=800, quality=80 gives crisp rendering at preview panel size without full HD weight.
+   Videos don't support transforms — return full URL for those. */
+function mediaUrlThumb(path, width){
+  if(!path) return '';
+  /* Videos: no transform support */
+  if(/\.(mp4|mov|webm)$/i.test(path)) return mediaUrl(path);
+  var w = width || 800;
+  return window.SB_URL+'/storage/v1/render/image/public/'+window.SB_BUCKET+'/'+path+'?width='+w+'&quality=82&resize=contain';
+}
+function mediaUrlPreview(path){
+  return mediaUrlThumb(path, 900); /* preview panel ~375px wide, 900px covers 2.4x retina */
+}
+function mediaUrlThumbnail(path){
+  return mediaUrlThumb(path, 400); /* grid thumbs ~120px, 400px covers 3x retina */
+}
 
 /* ── gps(): returns merged live data for a post index ── */
 function gps(idx){
@@ -835,7 +851,7 @@ function gps(idx){
   var ps = DB.postState[idx] || {};
   /* UI-only state kept in ST */
   if(!ST[idx]) ST[idx]={};
-  /* Build the unified data object the rest of the code expects */
+  var mediaRows = DB.media[idx]||[];
   var d = {
     status:        ps.status        || 'pending',
     ideaApproved:  ps.idea_approved || false,
@@ -844,8 +860,13 @@ function gps(idx){
     plat:          ps.plat          || ST[idx].plat || 'fb',
     statusLog:     [],
     comments:      (DB.comments[idx]||[]).filter(function(c){ return c.photo_index===null||c.photo_index===undefined; }),
-    photos:        (DB.media[idx]||[]).map(function(m){ return m.public_url; }),
-    _mediaRows:    DB.media[idx]||[],
+    /* photos: full-res URLs (used for lightbox) */
+    photos:        mediaRows.map(function(m){ return m.public_url; }),
+    /* thumbs: resized URLs for grid thumbnails */
+    thumbs:        mediaRows.map(function(m){ return mediaUrlThumbnail(m.storage_path); }),
+    /* previews: resized URLs for mock previews */
+    previews:      mediaRows.map(function(m){ return mediaUrlPreview(m.storage_path); }),
+    _mediaRows:    mediaRows,
     photoComments: buildPhotoComments(idx)
   };
   return d;
@@ -1033,14 +1054,31 @@ async function dbDeleteMedia(idx, mediaRow){
   }catch(err){ console.error('dbDeleteMedia',err); showToast('Delete failed','err'); }
 }
 
-/* ── UPDATE media sort order ── */
+/* ── UPDATE media sort order — bulk upsert, reliable atomic write ── */
 async function dbUpdateMediaOrder(idx){
-  var rows=DB.media[idx]||[];
+  var rows = DB.media[idx]||[];
+  if(!rows.length) return;
+  /* Build array of full row objects with updated sort_order for upsert */
+  var payload = rows.map(function(m, i){
+    return {
+      id: m.id,
+      month_key: m.month_key,
+      post_index: m.post_index,
+      storage_path: m.storage_path,
+      media_type: m.media_type,
+      sort_order: i
+    };
+  });
   try{
-    await Promise.all(rows.map(function(m,i){
-      return fetch(window.SB_URL+'/rest/v1/media?id=eq.'+m.id,{method:'PATCH',headers:dbHeaders(),body:JSON.stringify({sort_order:i})});
-    }));
-  }catch(err){ console.error('dbUpdateMediaOrder',err); }
+    var r = await fetch(window.SB_URL+'/rest/v1/media', {
+      method: 'POST',
+      headers: Object.assign({}, dbHeaders(), {'Prefer':'resolution=merge-duplicates,return=minimal'}),
+      body: JSON.stringify(payload)
+    });
+    if(!r.ok){ var t=await r.text(); console.error('dbUpdateMediaOrder failed', r.status, t); showToast('Order save failed','err'); return; }
+    /* Update local sort_order to match */
+    rows.forEach(function(m,i){ m.sort_order=i; });
+  }catch(err){ console.error('dbUpdateMediaOrder',err); showToast('Order save failed','err'); }
 }
 
 /* ── CALENDAR STATUS — tracks idea phase only (up to Ideas Approved) ── */
@@ -1479,7 +1517,8 @@ function renderInto(cid,idx){
   var post=POSTS[idx]; var data=gps(idx); var plat=data.plat||'fb';
   var fbCap=(ST['fb_cv_'+idx]!==undefined)?ST['fb_cv_'+idx]:post.fb;
   var igCap=(ST['ig_cv_'+idx]!==undefined)?ST['ig_cv_'+idx]:post.ig;
-  var photos=data.photos||[];
+  /* Use preview-resolution URLs for the mock panels (crisp but not full HD) */
+  var photos=data.previews||data.photos||[];
   var tabsH='<div class="pmt-row"><button class="ptab'+(plat==='fb'?' fb-on':'')+'" data-idx="'+idx+'" data-plat="fb" onclick="switchPlat('+idx+',\'fb\')">Facebook</button><button class="ptab'+(plat==='ig'?' ig-on':'')+'" data-idx="'+idx+'" data-plat="ig" onclick="switchPlat('+idx+',\'ig\')">Instagram</button></div>';
 
   if(plat==='fb'){
@@ -1578,20 +1617,22 @@ function renderDetail(idx){
   var det=document.getElementById('postDet'); det.style.display='block';
 
   /* Photos */
-  var photos=data.photos||[];
+  var photos=data.photos||[];   /* full-res — for lightbox */
+  var thumbUrls=data.thumbs||photos;  /* resized — for grid */
   var photoH='';
   if(photos.length>0){
-    var thumbs='';
+    var thumbsH='';
     for(var pi=0;pi<photos.length;pi++){
-      var src=photos[pi];
-      var isVid=src&&(src.startsWith('data:video')||/\.(mp4|mov|webm)$/i.test(src));
+      var src=photos[pi];           /* full URL — lightbox click target */
+      var tSrc=thumbUrls[pi]||src;  /* thumb URL — displayed in grid */
+      var isVid=src&&/\.(mp4|mov|webm)$/i.test(src);
       var pCmtCount = (data.photoComments&&data.photoComments[String(pi)])?data.photoComments[String(pi)].length:0;
       var mediaEl=isVid
         ? '<video src="'+src+'" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;display:block;pointer-events:none"></video>'+
           '<div class="vid-play-icon"><svg viewBox="0 0 24 24" fill="#fff" stroke="none"><polygon points="5,3 19,12 5,21"/></svg></div>'
-        : '<img src="'+src+'" alt="Photo '+(pi+1)+'">';
+        : '<img src="'+tSrc+'" alt="Photo '+(pi+1)+'" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;display:block;image-rendering:auto">';
       var tClass=isVid?'pthmb pthmb-vid':'pthmb';
-      thumbs+=
+      thumbsH+=
         '<div class="'+tClass+'" '+
           'draggable="true" '+
           'ondragstart="photoDragStart(event,'+idx+','+pi+')" '+
@@ -1613,7 +1654,7 @@ function renderDetail(idx){
       '<div class="upload-prog-wrap" id="uprog_'+idx+'"><div class="upload-prog-lbl">Uploading…</div><div class="upload-prog-bar"><div class="upload-prog-fill" id="uprogf_'+idx+'"></div></div></div>'+
       '<div class="pgrid-hint">Drag to reorder &middot; click to view &amp; comment</div>'+
       '<div class="pgrid" id="pgrid_'+idx+'">'+
-        thumbs+
+        thumbsH+
         '<label class="addtile" for="phi_'+idx+'">'+
           '<input type="file" id="phi_'+idx+'" accept="image/*,video/mp4,video/quicktime,video/mov" multiple onchange="addPhotos('+idx+',this)">'+
           '<div style="font-size:20px;color:var(--txt3);line-height:1">+</div>'+
@@ -1962,13 +2003,17 @@ function photoDrop(e, idx, pi){
   var src = _dragSrc.pi;
   _dragSrc = null;
   var rows = DB.media[idx]||[];
-  /* Shift-insert */
+  /* Shift-insert in local cache */
   var moved = rows.splice(src,1)[0];
   rows.splice(pi,0,moved);
-  DB.media[idx]=rows;
-  dbUpdateMediaOrder(idx);
-  previewCarPos[idx]=0;
+  DB.media[idx] = rows;
+  previewCarPos[idx] = 0;
+  /* Re-render immediately so UI feels instant */
   renderDetail(idx); renderPreview(idx);
+  /* Then write new order to DB */
+  dbUpdateMediaOrder(idx).then(function(){
+    showToast('Order saved','ok',1800);
+  });
 }
 
 function confirmRmPhoto(idx, pi){
